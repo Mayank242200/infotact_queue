@@ -8,6 +8,7 @@ import authRoutes from "./routes/authRoutes.js";
 import ticketRoutes from "./routes/ticketRoutes.js";
 import Ticket from "./models/Ticket.js";
 import User from "./models/User.js";
+import startAdminStatsEmitter from "./socket/adminStatsEmitter.js";
 
 dotenv.config();        // MUST be first
 connectDB();            // Connect to MongoDB
@@ -18,8 +19,17 @@ app.use(express.json());
 
 const server = http.createServer(app);
 
+// const io = new Server(server, {
+//   cors: { origin: "*", methods: ["GET", "POST"] }
+// });
+
 const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] }
+  cors: {
+    origin: "http://localhost:5173",
+    methods: ["GET", "POST"],
+    credentials: true
+  },
+  transports: ["websocket"]
 });
 
 // SOCKET LOGIC (same as your original code)
@@ -119,56 +129,59 @@ io.on("connection", (socket) => {
   });
 });
 
+// Start admin live queue stats
+startAdminStatsEmitter(io);
+
 // Queue Stats (unchanged)
-setInterval(async () => {
-  try {
-    const waitAgg = await Ticket.aggregate([
-      { $match: { claimedAt: { $ne: null } } },
-      { $project: { waitMs: { $subtract: ["$claimedAt", "$createdAt"] } } },
-      { $group: { _id: null, avgWaitMs: { $avg: "$waitMs" } } }
-    ]);
+// setInterval(async () => {
+//   try {
+//     const waitAgg = await Ticket.aggregate([
+//       { $match: { claimedAt: { $ne: null } } },
+//       { $project: { waitMs: { $subtract: ["$claimedAt", "$createdAt"] } } },
+//       { $group: { _id: null, avgWaitMs: { $avg: "$waitMs" } } }
+//     ]);
 
-    const resolveAgg = await Ticket.aggregate([
-      {
-        $match: {
-          resolvedAt: { $ne: null },
-          claimedAt: { $ne: null }
-        }
-      },
-      { $project: { resolveMs: { $subtract: ["$resolvedAt", "$claimedAt"] } } },
-      { $group: { _id: null, avgResolveMs: { $avg: "$resolveMs" } } }
-    ]);
+//     const resolveAgg = await Ticket.aggregate([
+//       {
+//         $match: {
+//           resolvedAt: { $ne: null },
+//           claimedAt: { $ne: null }
+//         }
+//       },
+//       { $project: { resolveMs: { $subtract: ["$resolvedAt", "$claimedAt"] } } },
+//       { $group: { _id: null, avgResolveMs: { $avg: "$resolveMs" } } }
+//     ]);
 
-    const leaderboardAgg = await Ticket.aggregate([
-      { $match: { status: "resolved", mentor: { $ne: null } } },
-      { $group: { _id: "$mentor", resolvedCount: { $sum: 1 } } },
-      { $sort: { resolvedCount: -1 } },
-      { $limit: 10 }
-    ]);
+//     const leaderboardAgg = await Ticket.aggregate([
+//       { $match: { status: "resolved", mentor: { $ne: null } } },
+//       { $group: { _id: "$mentor", resolvedCount: { $sum: 1 } } },
+//       { $sort: { resolvedCount: -1 } },
+//       { $limit: 10 }
+//     ]);
 
-    const mentorIds = leaderboardAgg.map(e => e._id);
-    const mentors = await User.find({ _id: { $in: mentorIds } }).select(
-      "name email"
-    );
+//     const mentorIds = leaderboardAgg.map(e => e._id);
+//     const mentors = await User.find({ _id: { $in: mentorIds } }).select(
+//       "name email"
+//     );
 
-    const leaderboard = leaderboardAgg.map(entry => ({
-      mentorId: entry._id,
-      mentorName:
-        mentors.find(m => m._id.toString() === entry._id.toString())?.name ||
-        "Unknown",
-      resolvedCount: entry.resolvedCount
-    }));
+//     const leaderboard = leaderboardAgg.map(entry => ({
+//       mentorId: entry._id,
+//       mentorName:
+//         mentors.find(m => m._id.toString() === entry._id.toString())?.name ||
+//         "Unknown",
+//       resolvedCount: entry.resolvedCount
+//     }));
 
-    io.to("admins").emit("queue_stats_update", {
-      generatedAt: new Date(),
-      avgWaitMs: waitAgg[0]?.avgWaitMs || null,
-      avgResolveMs: resolveAgg[0]?.avgResolveMs || null,
-      mentorLeaderboard: leaderboard
-    });
-  } catch (err) {
-    console.error("queue stats error:", err.message);
-  }
-}, 60000);
+//     io.to("admins").emit("queue_stats_update", {
+//       generatedAt: new Date(),
+//       avgWaitMs: waitAgg[0]?.avgWaitMs || null,
+//       avgResolveMs: resolveAgg[0]?.avgResolveMs || null,
+//       mentorLeaderboard: leaderboard
+//     });
+//   } catch (err) {
+//     console.error("queue stats error:", err.message);
+//   }
+// }, 60000);
 
 app.use("/api/auth", authRoutes);
 app.use("/api/tickets", ticketRoutes(io));
