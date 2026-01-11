@@ -1,4 +1,3 @@
-
 import express from "express";
 import { auth } from "../middleware/auth.js";
 import { roleCheck } from "../middleware/role.js";
