@@ -1,4 +1,3 @@
-
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -10,8 +9,8 @@ import ticketRoutes from "./routes/ticketRoutes.js";
 import Ticket from "./models/Ticket.js";
 import User from "./models/User.js";
 
-dotenv.config();
-connectDB();
+dotenv.config();        // MUST be first
+connectDB();            // Connect to MongoDB
 
 const app = express();
 app.use(cors());
@@ -23,6 +22,7 @@ const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
+// SOCKET LOGIC (same as your original code)
 const socketUsers = {};
 
 io.on("connection", (socket) => {
@@ -44,6 +44,7 @@ io.on("connection", (socket) => {
       if (!info || info.role !== "mentor") return;
 
       const mentorId = info.userId;
+
       const ticket = await Ticket.findOneAndUpdate(
         { _id: ticketId, status: "pending", mentor: null },
         { status: "claimed", mentor: mentorId, claimedAt: new Date() },
@@ -58,9 +59,7 @@ io.on("connection", (socket) => {
       }
 
       io.to("mentors").emit("ticket_claimed", ticket);
-
       io.to(`user:${mentorId}`).emit("my_queue_update", ticket);
-
       io.to(`user:${ticket.student._id.toString()}`).emit(
         "ticket_status_update",
         {
@@ -99,9 +98,7 @@ io.on("connection", (socket) => {
       }
 
       io.to("mentors").emit("ticket_resolved", ticket);
-
       io.to(`user:${mentorId}`).emit("my_queue_update", ticket);
-
       io.to(`user:${ticket.student._id.toString()}`).emit(
         "ticket_status_update",
         {
@@ -122,23 +119,13 @@ io.on("connection", (socket) => {
   });
 });
 
-const sendQueueStats = async () => {
+// Queue Stats (unchanged)
+setInterval(async () => {
   try {
-    const now = new Date();
-
     const waitAgg = await Ticket.aggregate([
       { $match: { claimedAt: { $ne: null } } },
-      {
-        $project: {
-          waitMs: { $subtract: ["$claimedAt", "$createdAt"] }
-        }
-      },
-      {
-        $group: {
-          _id: null,
-          avgWaitMs: { $avg: "$waitMs" }
-        }
-      }
+      { $project: { waitMs: { $subtract: ["$claimedAt", "$createdAt"] } } },
+      { $group: { _id: null, avgWaitMs: { $avg: "$waitMs" } } }
     ]);
 
     const resolveAgg = await Ticket.aggregate([
@@ -148,68 +135,45 @@ const sendQueueStats = async () => {
           claimedAt: { $ne: null }
         }
       },
-      {
-        $project: {
-          resolveMs: { $subtract: ["$resolvedAt", "$claimedAt"] }
-        }
-      },
-      {
-        $group: {
-          _id: null,
-          avgResolveMs: { $avg: "$resolveMs" }
-        }
-      }
+      { $project: { resolveMs: { $subtract: ["$resolvedAt", "$claimedAt"] } } },
+      { $group: { _id: null, avgResolveMs: { $avg: "$resolveMs" } } }
     ]);
 
     const leaderboardAgg = await Ticket.aggregate([
       { $match: { status: "resolved", mentor: { $ne: null } } },
-      {
-        $group: {
-          _id: "$mentor",
-          resolvedCount: { $sum: 1 }
-        }
-      },
+      { $group: { _id: "$mentor", resolvedCount: { $sum: 1 } } },
       { $sort: { resolvedCount: -1 } },
       { $limit: 10 }
     ]);
 
-    const mentorIds = leaderboardAgg.map((e) => e._id);
+    const mentorIds = leaderboardAgg.map(e => e._id);
     const mentors = await User.find({ _id: { $in: mentorIds } }).select(
       "name email"
     );
 
-    const leaderboard = leaderboardAgg.map((entry) => {
-      const m = mentors.find(
-        (mm) => mm._id.toString() === entry._id.toString()
-      );
-      return {
-        mentorId: entry._id,
-        mentorName: m ? m.name : "Unknown",
-        resolvedCount: entry.resolvedCount
-      };
-    });
+    const leaderboard = leaderboardAgg.map(entry => ({
+      mentorId: entry._id,
+      mentorName:
+        mentors.find(m => m._id.toString() === entry._id.toString())?.name ||
+        "Unknown",
+      resolvedCount: entry.resolvedCount
+    }));
 
-    const stats = {
-      generatedAt: now,
+    io.to("admins").emit("queue_stats_update", {
+      generatedAt: new Date(),
       avgWaitMs: waitAgg[0]?.avgWaitMs || null,
       avgResolveMs: resolveAgg[0]?.avgResolveMs || null,
       mentorLeaderboard: leaderboard
-    };
-
-    io.to("admins").emit("queue_stats_update", stats);
+    });
   } catch (err) {
     console.error("queue stats error:", err.message);
   }
-};
-
-setInterval(sendQueueStats, 60 * 1000);
+}, 60000);
 
 app.use("/api/auth", authRoutes);
 app.use("/api/tickets", ticketRoutes(io));
 
-app.get("/", (req, res) => {
-  res.send("Backend running…");
-});
+app.get("/", (req, res) => res.send("Backend running…"));
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
